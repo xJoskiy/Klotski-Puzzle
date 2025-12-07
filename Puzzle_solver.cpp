@@ -1,16 +1,26 @@
+
+
 #include <array>
+#include <cstdint>
 #include <iostream>
 #include <queue>
 #include <unordered_map>
 #include <vector>
 
-constexpr std::size_t const height = 5;
-constexpr std::size_t const width = 4;
-constexpr std::size_t const piece_count = 10;
+#define KLOTSKI_INLINE __attribute__((always_inline))
 
-using Matrix = std::array<int, height * width>;
+constexpr std::uint8_t const height = 5;
+constexpr std::uint8_t const width = 4;
+constexpr std::uint8_t const piece_count = 10;
 
-inline constexpr std::size_t index(std::size_t row, std::size_t col) {
+// mask_table[id][r][c]
+std::vector<std::vector<std::vector<std::uint32_t>>> mask_table(
+        piece_count,
+        std::vector<std::vector<std::uint32_t>>(height, std::vector<std::uint32_t>(width)));
+
+using Matrix = std::array<std::int8_t, height * width>;
+
+KLOTSKI_INLINE constexpr std::size_t index(std::size_t row, std::size_t col) {
     return row * width + col;
 }
 
@@ -24,67 +34,120 @@ class Board;
  *  -1   2   2   -1
  */
 
+// 0 0   -> 4 положения
+// 0 0 0 -> 8 положений
+
+// 5 байт на деталь
+// всего 10 деталей
+
 //  Положения верхних левых углов каждой фигуры
 struct State {
-    std::array<int, piece_count> row;
-    std::array<int, piece_count> col;
+    // Младшие биты -> строка
+    // Старшие биты -> колонка
+    std::uint64_t state_bits = 0;
+    std::uint32_t occupancy_mask = 0;
 
-    bool operator==(const State& lhs) const {
-        return row == lhs.row and col == lhs.col;
+    static constexpr int row_bits = 3;
+    static constexpr int col_bits = 2;
+    static constexpr int bits_per_piece = row_bits + col_bits;
+    static constexpr std::uint8_t piece_mask = (1 << bits_per_piece) - 1;
+    static constexpr std::uint8_t row_mask = (1 << row_bits) - 1;
+    static constexpr std::uint8_t col_mask = (1 << col_bits) - 1;
+
+    static_assert(bits_per_piece <= 8, "fits into byte for each piece");
+    static_assert(bits_per_piece * piece_count <= 64, "fits into 64 bits");
+
+    KLOTSKI_INLINE constexpr std::uint8_t piece_state(std::uint8_t idx) const noexcept {
+        std::uint64_t offset = static_cast<std::uint64_t>(bits_per_piece) * idx;
+        return (state_bits >> offset) & piece_mask;
     }
 
-    bool operator!=(const State& lhs) const {
-        return !(*this == lhs);
+    KLOTSKI_INLINE constexpr std::uint8_t row(std::uint8_t idx) const noexcept {
+        std::uint8_t state = piece_state(idx);
+        return state & row_mask;
     }
 
-    std::pair<int, int> operator[](int i) const {
-        return {row[i], col[i]};
+    KLOTSKI_INLINE constexpr std::uint8_t col(std::uint8_t idx) const noexcept {
+        std::uint8_t state = piece_state(idx);
+        return (state >> row_bits) & col_mask;
     }
-};
 
-struct ArrayHash {
-    constexpr std::size_t operator()(Matrix const& matrix) const noexcept {
-        // simple FNV-1a-ish combine (fast)
-        std::size_t h = 1469598103934665603ULL;
-        for (auto v : matrix) {
-            h ^= static_cast<std::size_t>(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    KLOTSKI_INLINE void constexpr set_row(std::uint8_t idx, std::uint8_t val) noexcept {
+        val &= row_mask;
+        std::uint8_t state = piece_state(idx);
+        state = (state & (col_mask << row_bits)) | val;
+
+        set_piece_state(idx, state);
+    }
+
+    KLOTSKI_INLINE void constexpr set_col(std::uint8_t idx, std::uint8_t val) noexcept {
+        val &= col_mask;
+        std::uint8_t state = piece_state(idx);
+        state = (state & row_mask) | (val << row_bits);
+
+        set_piece_state(idx, state);
+    }
+
+    KLOTSKI_INLINE void constexpr set_piece_state(std::uint8_t idx, uint8_t state) {
+        std::uint64_t offset = bits_per_piece * idx;
+        state_bits &= ~(static_cast<std::uint64_t>(piece_mask) << offset);
+        state_bits |= static_cast<std::uint64_t>(state & piece_mask) << offset;
+    }
+
+    KLOTSKI_INLINE constexpr std::uint64_t state() const noexcept {
+        return state_bits;
+    }
+
+    KLOTSKI_INLINE void constexpr set_piece(std::uint8_t idx, std::uint8_t row, std::uint8_t col) {
+        set_row(idx, row);
+        set_col(idx, col);
+    }
+
+    State() = default;
+
+    constexpr State(std::array<std::uint8_t, piece_count> rows,
+                    std::array<std::uint8_t, piece_count> cols) {
+        for (std::size_t i = 0; i < piece_count; ++i) {
+            set_piece(i, rows[i], cols[i]);
         }
-        return h;
+    }
+
+    constexpr std::pair<std::uint8_t, std::uint8_t> operator[](std::uint8_t i) const {
+        return {row(i), col(i)};
+    }
+
+    KLOTSKI_INLINE constexpr bool operator==(State const& lhs) const {
+        return state_bits == lhs.state_bits;
+    }
+
+    KLOTSKI_INLINE constexpr bool operator!=(State const& lhs) const {
+        return !(*this == lhs);
     }
 };
 
 struct StateHash {
-    size_t operator()(State const& state) const noexcept {
-        size_t h = 1469598103934665603ULL;
-        for (std::size_t i = 0; i < piece_count; ++i) {
-            h ^= state.row[i];
-            h *= 1099511628211ULL;
-
-            h ^= state.col[i];
-            h *= 1099511628211ULL;
-        }
-        return h;
+    std::size_t operator()(State const& st) const noexcept {
+        return static_cast<std::size_t>(st.state_bits);
     }
 };
 
 class Board {
 public:
     struct Piece {
-        size_t height;
-        size_t width;
+        std::uint8_t height;
+        std::uint8_t width;
     };
 
     enum directions { LEFT, RIGHT, UP, DOWN };
 
     Matrix matrix;
 
-    // const static data
     // Upper left corner of a Piece
-    State positions{{0, 0, 4, 0, 2, 2, 2, 3, 3, 2}, {1, 0, 1, 3, 0, 1, 2, 1, 2, 3}};
+    State state = State({0, 0, 4, 0, 2, 2, 2, 3, 3, 2}, {1, 0, 1, 3, 0, 1, 2, 1, 2, 3});
 
     // TODO: fill from initial matrix
-    static inline std::vector<Piece> pieces{{2, 2}, {2, 1}, {1, 2}, {2, 1}, {2, 1},
-                                    {1, 1}, {1, 1}, {1, 1}, {1, 1}, {2, 1}};
+    inline static std::vector<Piece> pieces{{2, 2}, {2, 1}, {1, 2}, {2, 1}, {2, 1},
+                                            {1, 1}, {1, 1}, {1, 1}, {1, 1}, {2, 1}};
 
     // cst
     Board(Matrix const& m) : matrix(m) {}
@@ -96,20 +159,19 @@ public:
     // methods
     static void movePiece(std::vector<Board>& res, Board const& base, int piece_index,
                           directions dir) {
-        std::vector<Piece> const& pieces = base.pieces;
-        State const& positions = base.positions;
+        State const& state = base.state;
         Matrix const& m = base.matrix;
 
-        auto [h, w] = pieces[piece_index];
-        auto [row, col] = positions[piece_index];
+        auto [h, w] = Board::pieces[piece_index];
+        auto [row, col] = state[piece_index];
 
-        int drow = 0, dcol = 0;
+        int8_t drow = 0, dcol = 0;
 
         switch (dir) {
             case LEFT:
                 dcol = -1;
                 if (col == 0) return;
-                for (int i = row; i < row + h; ++i)
+                for (std::uint8_t i = row; i < row + h; ++i)
                     if (m[index(i, col - 1)] != -1) return;
                 break;
 
@@ -137,47 +199,46 @@ public:
 
         Board cur = base;
         Matrix& matrix = cur.matrix;
-        auto& pos = cur.positions;
+        State& pos = cur.state;
 
         switch (dir) {
             case LEFT:
-                for (int i = row; i < row + h; ++i) {
+                for (std::uint8_t i = row; i < row + h; ++i) {
                     matrix[index(i, col - 1)] = piece_index;
                     matrix[index(i, col + w - 1)] = -1;
                 }
                 break;
 
             case RIGHT:
-                for (int i = row; i < row + h; ++i) {
+                for (std::uint8_t i = row; i < row + h; ++i) {
                     matrix[index(i, col + w)] = piece_index;
                     matrix[index(i, col)] = -1;
                 }
                 break;
 
             case UP:
-                for (int i = col; i < col + w; ++i) {
+                for (std::uint8_t i = col; i < col + w; ++i) {
                     matrix[index(row - 1, i)] = piece_index;
                     matrix[index(row + h - 1, i)] = -1;
                 }
                 break;
 
             case DOWN:
-                for (int i = col; i < col + w; ++i) {
+                for (std::uint8_t i = col; i < col + w; ++i) {
                     matrix[index(row + h, i)] = piece_index;
                     matrix[index(row, i)] = -1;
                 }
                 break;
         }
 
-        pos.row[piece_index] = row + drow;
-        pos.col[piece_index] = col + dcol;
+        pos.set_piece(piece_index, row + drow, col + dcol);
         res.push_back(std::move(cur));
     }
 
     std::vector<Board> GetNeighbours() {
         std::vector<Board> neighbors;
         neighbors.reserve(16);
-        for (int i = 0; i < pieces.size(); i++) {
+        for (std::uint8_t i = 0; i < pieces.size(); i++) {
             movePiece(neighbors, *this, i, UP);
             // std::cout << neighbors.size() << std::endl;
             movePiece(neighbors, *this, i, DOWN);
@@ -191,9 +252,9 @@ public:
     }
 
     static void Print(Matrix const& matrix) {
-        for (std::size_t i = 0; i < height; i++) {
-            for (std::size_t j = 0; j < width; j++) {
-                std::cout << matrix[index(i, j)] << ' ';
+        for (std::uint8_t i = 0; i < height; i++) {
+            for (std::uint8_t j = 0; j < width; j++) {
+                std::cout << static_cast<int>(matrix[index(i, j)]) << ' ';
             }
             std::cout << '\n';
         }
@@ -201,28 +262,84 @@ public:
     }
 
     static void buildMatrixFromState(State const& state, Matrix& out) {
-        for (int i = 0; i < height * width; ++i) out[i] = -1;
+        for (std::size_t i = 0; i < height * width; ++i) out[i] = -1;
 
-        for (int id = 0; id < piece_count; ++id) {
+        for (std::size_t id = 0; id < piece_count; ++id) {
             auto [row, col] = state[id];
-            int height = pieces[id].height;
-            int width = pieces[id].width;
+            size_t ph = pieces[id].height;
+            size_t pw = pieces[id].width;
 
-            for (int dr = 0; dr < height; ++dr)
-                for (int dc = 0; dc < width; ++dc) out[index(row + dr, col + dc)] = id;
+            for (std::size_t dr = 0; dr < ph; ++dr)
+                for (std::size_t dc = 0; dc < pw; ++dc) out[index(row + dr, col + dc)] = id;
         }
     }
 };
+
+static void PrintMask(uint32_t mask) {
+    for (std::uint8_t r = 0; r < height; ++r) {
+        for (std::uint8_t c = 0; c < width; ++c) {
+            std::uint32_t bit = 1u << index(r, c);
+            std::cout << ((mask & bit) ? "1 " : ". ");
+        }
+        std::cout << '\n';
+    }
+    std::cout << '\n';
+}
 
 class Solver {
 public:
     template <typename Predicate>
     static std::vector<Matrix> Solve(Matrix const& matrix, Predicate pred) {
         Board init(matrix);
+        //
+        // 0  1  2  3
+        // 4  5  6  7
+        // 8  9  10 11
+        // 12 13 14 15
+        // 16 17 18 19
+        //
+        // mask_table[idx][r][c] -> uint32_t
+        //
+        // auto make_mask = [](Board::Piece const& p, std::uint8_t r,
+        //                     std::uint8_t c) -> std::uint32_t {
+        //     auto [ph, pw] = p;
+        //     std::uint32_t mask = 0;
+        //     for (std::size_t i = r; i < r + ph; ++i) {
+        //         for (std::size_t j = c; j < c + pw; ++j) {
+        //             mask |= (1U << index(i, j));
+        //         }
+        //     }
+
+        //     return mask;
+        // };
+
+        // for (std::size_t i = 0; i < piece_count; ++i) {
+        //     auto [ph, pw] = Board::pieces[i];
+        //     for (std::size_t r = 0; r + ph < height; ++r) {
+        //         for (std::size_t c = 0; c + pw < width; ++c) {
+        //             mask_table[i][r][c] = make_mask(Board::pieces[i], r, c);
+        //         }
+        //     }
+        // }
+
+        // for (std::size_t i = 0; i < piece_count; ++i) {
+        //     auto [ph, pw] = Board::pieces[i];
+        //     for (std::size_t r = 0; r + ph < height; ++r) {
+        //         for (std::size_t c = 0; c + pw < width; ++c) {
+        //             PrintMask(mask_table[i][r][c]);
+        //         }
+        //     }
+        // }
+
+        // for (int i = 0; i < piece_count; i++) {
+        //     auto [row, col] = init.state[i];
+        //     std::cout << static_cast<int>(row) << ' ' << static_cast<int>(col) << '\n';
+        // }
+
         std::queue<Board> queue;
         queue.push(init);
 
-        std::unordered_map<State, State, StateHash> prev{{init.positions, init.positions}};
+        std::unordered_map<State, State, StateHash> prev{{init.state, init.state}};
         prev.reserve(8'000'000);
 
         while (!queue.empty()) {
@@ -232,14 +349,14 @@ public:
 
             if (pred(cur_matrix)) {
                 std::cout << prev.size() << std::endl;
-                return GetResult(prev, cur_board.positions, init.positions);
+                return GetResult(prev, cur_board.state, init.state);
             }
             // if (prev.size() % 10000 == 0)
-            //     std::cout << prev.size() << '\n';
+            // std::cout << prev.size() << '\n';
             std::vector<Board> neighbors = cur_board.GetNeighbours();
             for (auto& n : neighbors) {
-                if (prev.find(n.positions) == prev.end()) {
-                    prev.emplace(n.positions, cur_board.positions);
+                if (prev.find(n.state) == prev.end()) {
+                    prev.emplace(n.state, cur_board.state);
                     queue.push(std::move(n));
                 }
             }
@@ -248,18 +365,18 @@ public:
         return {};
     }
 
-    static std::vector<Matrix> GetResult(
-            std::unordered_map<State, State, StateHash> const& result, State cur, State const& init) {
+    static std::vector<Matrix> GetResult(std::unordered_map<State, State, StateHash> const& result,
+                                         State cur, State const& init) {
         std::vector<State> states{cur};
         states.reserve(100);
         while (cur != init) {
             State prev = result.at(cur);
             states.push_back(prev);
-            cur = std::move(prev);
+            cur = prev;
         }
 
         std::vector<Matrix> res(states.size());
-        for (std::size_t i = 0; i < res.size(); ++i) {
+        for (std::uint8_t i = 0; i < res.size(); ++i) {
             Board::buildMatrixFromState(states[i], res[i]);
         }
 
