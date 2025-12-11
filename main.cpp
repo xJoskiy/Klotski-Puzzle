@@ -1,9 +1,27 @@
+#include <chrono>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
 
 #include "Klotski.hpp"
 #include "cpp-httplib/httplib.h"
+
+namespace {
+
+klotski::State getState(auto req) {
+    nlohmann::json data = nlohmann::json::parse(req.body);
+
+    klotski::State state;
+    for (std::size_t i = 0; i < 10; i++) {
+        auto coords = data[std::to_string(i)];
+        std::uint8_t row = coords["row"];
+        std::uint8_t col = coords["col"];
+        state.set_piece(i, row, col);
+    }
+
+    return state;
+}
+}  // namespace
 
 int main() {
     httplib::Server serv;
@@ -19,18 +37,13 @@ int main() {
     serv.Post("/solve", [&](auto const& req, auto& res) {
         cors(req, res);
         try {
-            auto data = nlohmann::json::parse(req.body);
-            std::string state = data["state"];
-
-            std::array<std::array<int, 4>, 5> matrix = nlohmann::json::parse(state);
-            std::array<std::int8_t, 20> arr;
-            for (int i = 0; i < 5; i++) {
-                for (int j = 0; j < 4; j++) {
-                    arr[i * 4 + j] = matrix[i][j];
-                }
-            }
-
-            auto moves = klotski::Solver::Solve(arr);
+            auto state = getState(req);
+            auto time = std::chrono::high_resolution_clock::now();
+            auto moves = klotski::Solver::Solve(state);
+            std::cout << "Solution was found in " << (std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::high_resolution_clock::now() - time))
+                                 .count() / 1000 << " seconds"
+                      << std::endl;
 
             nlohmann::json result;
             result["moves"] = nlohmann::json::array();
@@ -53,25 +66,12 @@ int main() {
     serv.Post("/hint", [&](auto const& req, auto& res) {
         cors(req, res);
         try {
-            auto data = nlohmann::json::parse(req.body);
-            std::string state = data["state"];
-
-            std::array<std::array<int, 4>, 5> matrix = nlohmann::json::parse(state);
-            std::array<std::int8_t, 20> arr;
-            for (int i = 0; i < 5; i++) {
-                for (int j = 0; j < 4; j++) {
-                    arr[i * 4 + j] = matrix[i][j];
-                }
-            }
-
-            klotski::Board::Move move = klotski::Solver::GetNextMove(arr);
+            klotski::State state = getState(req);
+            klotski::Board::Move move = klotski::Solver::GetNextMove(state);
 
             auto [drow, dcol] = klotski::Board::dir_to_dif.at(move.dir);
             nlohmann::json result = {
-                {"id", static_cast<int>(move.id)},
-                {"drow", drow},
-                {"dcol", dcol}
-            };
+                    {"id", static_cast<int>(move.id)}, {"drow", drow}, {"dcol", dcol}};
 
             res.set_content(result.dump(), "application/json");
 

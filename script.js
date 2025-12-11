@@ -64,6 +64,16 @@ function buildOccupancy() {
     return occ;
 }
 
+function buildState() {
+    const state = {}
+    for (let id = 0; id < pieces.length; id++) {
+        let p = findPieceById(id);
+        state[id] = {"row": p.row, "col": p.col};
+    }
+
+    return state;
+}
+
 // Отрисовка сетки (фоновые ячейки) и создание элементов блоков
 function renderBoard() {
     board.innerHTML = '';
@@ -221,9 +231,7 @@ async function solve() {
 
     isSolving = true;
 
-    const payload = {
-        state: JSON.stringify(buildOccupancy())
-    }
+    const payload = buildState()
 
     try {
         const resp = await fetch("http://localhost:8080/solve", {
@@ -254,6 +262,8 @@ async function solve() {
     } catch (e) {
         console.error("Network error:", e);
     }
+
+    isSolving = false;
 }
 
 async function hint() {
@@ -261,9 +271,7 @@ async function hint() {
 
     isSolving = true;
 
-    const payload = {
-        state: JSON.stringify(buildOccupancy())
-    }
+    const payload = buildState();
 
     try {
         let time = Date.now()
@@ -287,14 +295,15 @@ async function hint() {
 
         let piece = findPieceById(data["id"]);
         doMove(piece, data["drow"], data["dcol"]);
-        await wait(650);
-        isSolving = false;
+        await wait(500);
 
         // если сервер вернул шаги/действия — можно их применить здесь
         // например: applySolution(data.moves);
     } catch (e) {
         console.error("Network error:", e);
     }
+
+    isSolving = false;
 }
 
 function wait(ms) {

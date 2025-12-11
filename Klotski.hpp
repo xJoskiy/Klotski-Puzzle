@@ -1,10 +1,12 @@
 
 
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <iostream>
 #include <magic_enum/magic_enum.hpp>
 #include <queue>
+#include <sstream>
 #include <unordered_map>
 #include <vector>
 
@@ -12,20 +14,32 @@ namespace klotski {
 
 #define KLOTSKI_INLINE __attribute__((always_inline))
 
-constexpr std::uint8_t const height = 5;
-constexpr std::uint8_t const width = 4;
-constexpr std::uint8_t const piece_count = 10;
+constexpr std::uint8_t height = 5;
+constexpr std::uint8_t width = 4;
+constexpr std::uint8_t piece_count = 10;
 
-// mask_table[id][r][c]
-std::vector<std::vector<std::vector<std::uint32_t>>> mask_table(
-        piece_count,
-        std::vector<std::vector<std::uint32_t>>(height, std::vector<std::uint32_t>(width)));
+static std::array<std::array<std::array<std::uint32_t, width>, height>, 10> mask_table{};
 
 using Matrix = std::array<std::int8_t, height * width>;
 
-KLOTSKI_INLINE constexpr std::size_t index(std::size_t row, std::size_t col) {
+KLOTSKI_INLINE static constexpr std::size_t index(std::size_t row, std::size_t col) {
     return row * width + col;
 }
+
+constexpr static std::array<std::pair<int, int>, 10> pieces{
+        {std::pair<int, int>{2, 2}, std::pair<int, int>{2, 1}, std::pair<int, int>{1, 2},
+         std::pair<int, int>{2, 1}, std::pair<int, int>{2, 1}, std::pair<int, int>{1, 1},
+         std::pair<int, int>{1, 1}, std::pair<int, int>{1, 1}, std::pair<int, int>{1, 1},
+         std::pair<int, int>{2, 1}}};
+
+
+static inline constexpr std::array<std::array<uint8_t, 4>, 4> piece_groups = {{
+            {{0}},           // Группа 0: уникальный блок 2×2
+            {{1, 3, 4, 9}},  // Группа 1: все 2×1 блоки
+            {{2}},           // Группа 2: единственный 1×2 блок
+            {{5, 6, 7, 8}},  // Группа 3: четыре 1×1 блока
+    }};
+
 
 class Board;
 
@@ -48,7 +62,6 @@ struct State {
     // Младшие биты -> строка
     // Старшие биты -> колонка
     std::uint64_t state_bits = 0;
-    std::uint32_t occupancy_mask = 0;
 
     static constexpr int row_bits = 3;
     static constexpr int col_bits = 2;
@@ -60,39 +73,40 @@ struct State {
     static_assert(bits_per_piece <= 8, "fits into byte for each piece");
     static_assert(bits_per_piece * piece_count <= 64, "fits into 64 bits");
 
-    KLOTSKI_INLINE constexpr std::uint8_t piece_state(std::uint8_t idx) const noexcept {
-        std::uint64_t offset = static_cast<std::uint64_t>(bits_per_piece) * idx;
+    KLOTSKI_INLINE constexpr std::uint8_t piece_state(std::uint8_t id) const noexcept {
+        std::uint64_t offset = static_cast<std::uint64_t>(bits_per_piece) * id;
         return (state_bits >> offset) & piece_mask;
     }
 
-    KLOTSKI_INLINE constexpr std::uint8_t row(std::uint8_t idx) const noexcept {
-        std::uint8_t state = piece_state(idx);
+    KLOTSKI_INLINE constexpr std::uint8_t row(std::uint8_t id) const noexcept {
+        std::uint8_t state = piece_state(id);
         return state & row_mask;
     }
 
-    KLOTSKI_INLINE constexpr std::uint8_t col(std::uint8_t idx) const noexcept {
-        std::uint8_t state = piece_state(idx);
+    KLOTSKI_INLINE constexpr std::uint8_t col(std::uint8_t id) const noexcept {
+        std::uint8_t state = piece_state(id);
         return (state >> row_bits) & col_mask;
     }
 
-    KLOTSKI_INLINE void constexpr set_row(std::uint8_t idx, std::uint8_t val) noexcept {
+    KLOTSKI_INLINE void constexpr set_row(std::uint8_t id, std::uint8_t val) noexcept {
         val &= row_mask;
-        std::uint8_t state = piece_state(idx);
+        std::uint8_t state = piece_state(id);
         state = (state & (col_mask << row_bits)) | val;
 
-        set_piece_state(idx, state);
+        set_piece_state(id, state);
     }
 
-    KLOTSKI_INLINE void constexpr set_col(std::uint8_t idx, std::uint8_t val) noexcept {
+    KLOTSKI_INLINE void constexpr set_col(std::uint8_t id, std::uint8_t val) noexcept {
         val &= col_mask;
-        std::uint8_t state = piece_state(idx);
+        std::uint8_t state = piece_state(id);
         state = (state & row_mask) | (val << row_bits);
 
-        set_piece_state(idx, state);
+        set_piece_state(id, state);
     }
 
-    KLOTSKI_INLINE void constexpr set_piece_state(std::uint8_t idx, uint8_t state) {
-        std::uint64_t offset = bits_per_piece * idx;
+    KLOTSKI_INLINE void constexpr set_piece_state(std::uint8_t id, uint8_t state) {
+        // filling state bits
+        std::uint64_t offset = bits_per_piece * id;
         state_bits &= ~(static_cast<std::uint64_t>(piece_mask) << offset);
         state_bits |= static_cast<std::uint64_t>(state & piece_mask) << offset;
     }
@@ -101,9 +115,9 @@ struct State {
         return state_bits;
     }
 
-    KLOTSKI_INLINE void constexpr set_piece(std::uint8_t idx, std::uint8_t row, std::uint8_t col) {
-        set_row(idx, row);
-        set_col(idx, col);
+    KLOTSKI_INLINE void constexpr set_piece(std::uint8_t id, std::uint8_t row, std::uint8_t col) {
+        std::uint32_t new_state = row | (col << row_bits);
+        set_piece_state(id, new_state);
     }
 
     State() = default;
@@ -115,22 +129,35 @@ struct State {
         }
     }
 
-    constexpr std::pair<std::uint8_t, std::uint8_t> operator[](std::uint8_t i) const {
-        return {row(i), col(i)};
+    constexpr std::pair<std::uint8_t, std::uint8_t> operator[](std::uint8_t id) const {
+        std::uint8_t state = piece_state(id);
+        std::uint8_t col = (state >> row_bits) & col_mask;
+        std::uint8_t row = state & row_mask;
+        return {row, col};
     }
 
-    KLOTSKI_INLINE constexpr bool operator==(State const& lhs) const {
-        return state_bits == lhs.state_bits;
+    KLOTSKI_INLINE constexpr bool operator==(State const& rhs) const {
+        for (auto const& grp : piece_groups) {
+            std::array<uint8_t, 16> va{}, vb{};
+            int k = 0;
+
+            for (uint8_t id : grp) {
+                va[k] = (this->row(id) << 2) | this->col(id);
+                vb[k] = (rhs.row(id) << 2) | rhs.col(id);
+                k++;
+            }
+
+            std::sort(va.begin(), va.begin() + k);
+            std::sort(vb.begin(), vb.begin() + k);
+
+            for (int i = 0; i < k; ++i)
+                if (va[i] != vb[i]) return false;
+        }
+        return true;
     }
 
     KLOTSKI_INLINE constexpr bool operator!=(State const& lhs) const {
         return !(*this == lhs);
-    }
-};
-
-struct StateHash {
-    std::size_t operator()(State const& st) const noexcept {
-        return static_cast<std::size_t>(st.state_bits);
     }
 };
 
@@ -151,30 +178,40 @@ public:
     struct Move {
         std::uint8_t id;
         directions dir;
+
+        bool operator==(Move const& move) const = default;
     };
 
-    Matrix matrix;
-    State state;  //= State({0, 0, 4, 0, 2, 2, 2, 3, 3, 2}, {1, 0, 1, 3, 0, 1, 2, 1, 2, 3});
+    // 0  1  2  3
+    // 4  5  6  7
+    // 8  9  10 11
+    // 12 13 14 15
+    // 16 17 18 19
 
-    // TODO: fill from initial matrix
+    // Оставшиеся 12 бит не используются
+
+    std::uint32_t occupancy_mask = 0;
+
+    State state;
+    Matrix matrix;
+
     inline static std::vector<Piece> pieces{{2, 2}, {2, 1}, {1, 2}, {2, 1}, {2, 1},
                                             {1, 1}, {1, 1}, {1, 1}, {1, 1}, {2, 1}};
 
-    Board(Matrix const& m) : matrix(m) {
-        state = buildStateFromMatrix(m);
+    Board(State const& st) : state(st) {
+        matrix = buildMatrixFromState(st);
     }
 
-    Matrix const& GetMatrix() const noexcept {
-        return matrix;
-    };
+    Board(Board const& board) = default;
+    Board(Board&& board) = default;
 
     // methods
-    static void movePiece(std::vector<Board>& res, Board const& base, int piece_index,
+    static void movePiece(std::vector<Board>& res, Board const& board, int piece_index,
                           directions dir) {
         using enum directions;
 
-        State const& state = base.state;
-        Matrix const& m = base.matrix;
+        State const& state = board.state;
+        Matrix const& m = board.matrix;
 
         auto [h, w] = Board::pieces[piece_index];
         auto [row, col] = state[piece_index];
@@ -211,7 +248,7 @@ public:
                 break;
         }
 
-        Board cur = base;
+        Board cur = board;
         Matrix& matrix = cur.matrix;
         State& pos = cur.state;
 
@@ -249,15 +286,15 @@ public:
         res.push_back(std::move(cur));
     }
 
-    std::vector<Board> GetNeighbours() {
-        using enum directions;
+    inline static std::vector<Board> GetNeighbours(Board const& board) {
         std::vector<Board> neighbors;
         neighbors.reserve(16);
         for (std::uint8_t i = 0; i < pieces.size(); i++) {
             for (auto dir : magic_enum::enum_values<directions>()) {
-                movePiece(neighbors, *this, i, dir);
+                movePiece(neighbors, board, i, dir);
             }
         }
+
         return neighbors;
     }
 
@@ -269,11 +306,11 @@ public:
             }
             ss << '\n';
         }
-        ss << '\n';
         return ss.str();
     }
 
-    static void buildMatrixFromState(State const& state, Matrix& out) {
+    static Matrix buildMatrixFromState(State const& state) {
+        Matrix out;
         for (std::size_t i = 0; i < height * width; ++i) out[i] = -1;
 
         for (std::size_t id = 0; id < piece_count; ++id) {
@@ -284,6 +321,7 @@ public:
             for (std::size_t dr = 0; dr < ph; ++dr)
                 for (std::size_t dc = 0; dc < pw; ++dc) out[index(row + dr, col + dc)] = id;
         }
+        return out;
     }
 
     static State buildStateFromMatrix(Matrix const& matrix) {
@@ -306,94 +344,76 @@ public:
     }
 };
 
-static void PrintMask(uint32_t mask) {
-    for (std::uint8_t r = 0; r < height; ++r) {
-        for (std::uint8_t c = 0; c < width; ++c) {
-            std::uint32_t bit = 1u << index(r, c);
-            std::cout << ((mask & bit) ? "1 " : ". ");
+struct StateHash {
+    std::size_t operator()(State const& st) const noexcept {
+        // Будем заполнять сюда каноническое представление
+        uint64_t acc = 0xcbf29ce484222325ULL;  // FNV offset basis
+
+        // Проходим по всем классам эквивалентности фигур
+        for (auto const& grp : piece_groups) {
+            // grp = { список id деталей одной формы }
+
+            // Сюда собираем позиции (до 4 шт обычно)
+            std::array<uint8_t, 16> vals{};
+            int k = 0;
+
+            // Считать row/col всех деталей одной формы
+            for (uint8_t id : grp) {
+                uint8_t r = st.row(id);
+                uint8_t c = st.col(id);
+                vals[k++] = (r << 2) | c;  // 3 бита r + 2 бита c в одном байте
+            }
+
+            // Отсортировать позиции внутри группы
+            // (лексикографично по компактному байту)
+            std::sort(vals.begin(), vals.begin() + k);
+
+            // Добавить в хэш
+            for (int i = 0; i < k; ++i) {
+                acc ^= vals[i];
+                acc *= 0x100000001b3ULL;
+            }
+
+            // Разделитель групп
+            acc ^= 0xff;
+            acc *= 0x100000001b3ULL;
         }
-        std::cout << '\n';
+
+        return static_cast<size_t>(acc);
     }
-    std::cout << '\n';
-}
+};
 
 class Solver {
 public:
-    // template <typename Predicate>
-    static std::vector<Board::Move> Solve(Matrix const& matrix) {
-        static auto pred = [](Matrix const& m) {
-            bool p = m[index(4, 1)] == 0 and m[index(4, 2)] == 0;
-            return p;
+    static std::vector<Board::Move> Solve(State const& init_state) {
+        static auto pred = [](State const& state) {
+            auto [row, col] = state[0];
+            return row == 3 and col == 1;
         };
 
-        Board init(matrix);
-        //
-        // 0  1  2  3
-        // 4  5  6  7
-        // 8  9  10 11
-        // 12 13 14 15
-        // 16 17 18 19
-        //
-        // mask_table[idx][r][c] -> uint32_t
-        //
-        // auto make_mask = [](Board::Piece const& p, std::uint8_t r,
-        //                     std::uint8_t c) -> std::uint32_t {
-        //     auto [ph, pw] = p;
-        //     std::uint32_t mask = 0;
-        //     for (std::size_t i = r; i < r + ph; ++i) {
-        //         for (std::size_t j = c; j < c + pw; ++j) {
-        //             mask |= (1U << index(i, j));
-        //         }
-        //     }
-
-        //     return mask;
-        // };
-
-        // for (std::size_t i = 0; i < piece_count; ++i) {
-        //     auto [ph, pw] = Board::pieces[i];
-        //     for (std::size_t r = 0; r + ph < height; ++r) {
-        //         for (std::size_t c = 0; c + pw < width; ++c) {
-        //             mask_table[i][r][c] = make_mask(Board::pieces[i], r, c);
-        //         }
-        //     }
-        // }
-
-        // for (std::size_t i = 0; i < piece_count; ++i) {
-        //     auto [ph, pw] = Board::pieces[i];
-        //     for (std::size_t r = 0; r + ph < height; ++r) {
-        //         for (std::size_t c = 0; c + pw < width; ++c) {
-        //             PrintMask(mask_table[i][r][c]);
-        //         }
-        //     }
-        // }
-
-        // for (int i = 0; i < piece_count; i++) {
-        //     auto [row, col] = init.state[i];
-        //     std::cout << static_cast<int>(row) << ' ' << static_cast<int>(col) << '\n';
-        // }
+        Board init_board{init_state};
 
         std::queue<Board> queue;
-        queue.push(init);
+        queue.push(init_state);
 
-        std::unordered_map<State, State, StateHash> prev{{init.state, init.state}};
-        prev.reserve(8'000'000);
+        std::unordered_map<State, State, StateHash> prev{{init_state, init_state}};
+        prev.reserve(10'000);
 
         while (!queue.empty()) {
-            Board cur_board = std::move(queue.front());
+            Board cur_board = queue.front();
             queue.pop();
-            Matrix const& cur_matrix = cur_board.GetMatrix();
 
-            if (pred(cur_matrix)) {
+            if (pred(cur_board.state)) {
                 std::cout << prev.size() << std::endl;
-                return GetResult(prev, cur_board.state, init.state);
+                return GetResult(prev, cur_board.state, init_state);
             }
-            // if (prev.size() % 10000 == 0)
-            // std::cout << prev.size() << '\n';
-            std::vector<Board> neighbors = cur_board.GetNeighbours();
+
+            std::vector<Board> neighbors = Board::GetNeighbours(cur_board);
             for (auto& n : neighbors) {
-                if (prev.find(n.state) == prev.end()) {
-                    prev.emplace(n.state, cur_board.state);
-                    queue.push(std::move(n));
+                auto n_state = n.state;
+                if (prev.find(n_state) == prev.end()) {
+                    prev.emplace(n_state, cur_board.state);
+                    queue.push(n);
                 }
             }
         }
@@ -438,39 +458,10 @@ public:
         return moves;
     }
 
-    static Board::Move GetNextMove(Matrix const& matrix) {
-        std::vector<Board::Move> solution = Solve(matrix);
+    static Board::Move GetNextMove(State const& state) {
+        std::vector<Board::Move> solution = Solve(state);
         return solution[0];
     }
 };
-
-// int main() {
-//     Matrix initial = {1, 0, 0, 3, 1, 0, 0, 3, 4, 5, 6, 9, 4, 7, 8, 9, -1, 2, 2, -1};
-
-//     // Matrix initial = {{1, 0, 0, 3},
-//     // 		          {1, 0, 0, 3},
-//     // 		   		  {4, 5, 6, 9},
-//     // 		   		  {4, 7, 8, 9},
-//     // 		   		  {-1, 2, 2, -1}};
-
-//     // auto isSolved = [](Matrix const& conf) {
-//     // 	bool p = conf[4][1] == 0 and conf[4][2] == 0 and conf[3][1] == 0 and conf[3][2] == 0;
-//     // 	return p;
-//     // };
-
-//     auto isSolved = [](Matrix const& m) {
-//         bool p = m[index(4, 1)] == 0 and m[index(4, 2)] == 0;
-//         return p;
-//     };
-
-//     // auto isSolved = [](Matrix const& conf) {
-//     // 	return false;
-//     // };
-
-//     auto ans = Solver::Solve(initial, isSolved);
-//     for (auto const& m : ans) Board::Print(m);
-
-//     return 0;
-// }
 
 }  // namespace klotski
