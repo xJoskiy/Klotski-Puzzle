@@ -75,6 +75,24 @@ body {
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
 }
 
+.target-zone {
+    width: 156px;
+    height: 9px;
+    background: #ffeb3b;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 14px;
+    font-weight: bold;
+    color: #ffa726;
+    position: relative;
+    left: 50%;
+    transform: translateX(-50%);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+    border-radius: 6px;
+
+}
+
 .piece {
     background: #4fc3f7;
     border: 3px solid #00332a;
@@ -83,7 +101,6 @@ body {
     justify-content: center;
     align-items: center;
     cursor: pointer;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
     user-select: none;
 }
 
@@ -140,7 +157,7 @@ body {
     }
 }
 
-/* Для мобильных устройств */
+/* Мобилки */
 @media (max-width: 768px) {
     .container {
         flex-direction: column;
@@ -151,4 +168,34 @@ body {
         width: 280px;
         height: 350px;
     }
+
+    .target-zone {
+        width: 156;
+        height: 9px;
+    }
+}
+
+@keyframes victoryFlash {
+    0%   { background: #ffeb3b; box-shadow: 0 0 0 0 rgba(255, 235, 59, 0.7); }
+    50%  { background: #ffffff; box-shadow: 0 0 0 20px rgba(255, 235, 59, 0.9); }
+    100% { background: #ffeb3b; box-shadow: 0 0 0 40px rgba(255, 235, 59, 0); }
+}
+
+.victory {
+    animation: victoryFlash 1.2s ease-out;
+    position: relative;
+    z-index: 10;
+}
+
+@keyframes confettiBg {
+    0%   { background: #2e0d6b; }
+    20%  { background: #4a1a9b; }
+    40%  { background: #ffeb3b; }
+    60%  { background: #4a1a9b; }
+    80%  { background: #ffeb3b; }
+    100% { background: #2e0d6b; }
+}
+
+.victory-screen {
+    animation: confettiBg 1s ease;
 }

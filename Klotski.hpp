@@ -182,16 +182,6 @@ public:
         bool operator==(Move const& move) const = default;
     };
 
-    // 0  1  2  3
-    // 4  5  6  7
-    // 8  9  10 11
-    // 12 13 14 15
-    // 16 17 18 19
-
-    // Оставшиеся 12 бит не используются
-
-    std::uint32_t occupancy_mask = 0;
-
     State state;
     Matrix matrix;
 
@@ -324,7 +314,7 @@ public:
         return out;
     }
 
-    static State buildStateFromMatrix(Matrix const& matrix) {
+    static constexpr State buildStateFromMatrix(Matrix const& matrix) {
         std::array<std::uint8_t, piece_count> rows{};
         std::array<std::uint8_t, piece_count> cols{};
         std::array<bool, piece_count> found{};
@@ -346,35 +336,23 @@ public:
 
 struct StateHash {
     std::size_t operator()(State const& st) const noexcept {
-        // Будем заполнять сюда каноническое представление
-        uint64_t acc = 0xcbf29ce484222325ULL;  // FNV offset basis
-
-        // Проходим по всем классам эквивалентности фигур
+        uint64_t acc = 0xcbf29ce484222325ULL;
         for (auto const& grp : piece_groups) {
-            // grp = { список id деталей одной формы }
-
-            // Сюда собираем позиции (до 4 шт обычно)
             std::array<uint8_t, 16> vals{};
             int k = 0;
-
-            // Считать row/col всех деталей одной формы
             for (uint8_t id : grp) {
                 uint8_t r = st.row(id);
                 uint8_t c = st.col(id);
-                vals[k++] = (r << 2) | c;  // 3 бита r + 2 бита c в одном байте
+                vals[k++] = (r << 2) | c;
             }
 
-            // Отсортировать позиции внутри группы
-            // (лексикографично по компактному байту)
             std::sort(vals.begin(), vals.begin() + k);
 
-            // Добавить в хэш
             for (int i = 0; i < k; ++i) {
                 acc ^= vals[i];
                 acc *= 0x100000001b3ULL;
             }
 
-            // Разделитель групп
             acc ^= 0xff;
             acc *= 0x100000001b3ULL;
         }
@@ -404,7 +382,6 @@ public:
             queue.pop();
 
             if (pred(cur_board.state)) {
-                std::cout << prev.size() << std::endl;
                 return GetResult(prev, cur_board.state, init_state);
             }
 
@@ -417,7 +394,6 @@ public:
                 }
             }
         }
-        std::cout << "No solution was found" << std::endl;
         return {};
     }
 
@@ -458,9 +434,18 @@ public:
         return moves;
     }
 
-    static Board::Move GetNextMove(State const& state) {
+    static std::optional<Board::Move> GetNextMove(State const& state) {
         std::vector<Board::Move> solution = Solve(state);
-        return solution[0];
+        return solution.size() ? std::optional<Board::Move>(solution[0]) : std::nullopt;
+    }
+
+    static void ApplyMoves(std::vector<Board::Move> const& moves, State& st) {
+        for (Board::Move move : moves) {
+            auto id = move.id;
+            auto [row, col] = st[id];
+            auto [dr, dc] = Board::dir_to_dif.at(move.dir);
+            st.set_piece(id, row + dr, col + dc);
+        }
     }
 };
 

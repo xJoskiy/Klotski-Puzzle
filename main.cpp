@@ -1,4 +1,5 @@
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -40,10 +41,12 @@ int main() {
             auto state = getState(req);
             auto time = std::chrono::high_resolution_clock::now();
             auto moves = klotski::Solver::Solve(state);
-            std::cout << "Solution was found in " << (std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::cout << "Solution was found in "
+                      << (std::chrono::duration_cast<std::chrono::milliseconds>(
                                   std::chrono::high_resolution_clock::now() - time))
-                                 .count() / 1000 << " seconds"
-                      << std::endl;
+                                         .count() /
+                                 1000
+                      << " seconds" << std::endl;
 
             nlohmann::json result;
             result["moves"] = nlohmann::json::array();
@@ -56,6 +59,9 @@ int main() {
 
             res.set_content(result.dump(), "application/json");
 
+            std::cout << "[" << std::chrono::high_resolution_clock::now() << "] " << "/solve "
+                      << req.remote_addr << std::endl;
+
         } catch (std::exception const& e) {
             nlohmann::json err = {{"error", e.what()}};
             res.status = 400;
@@ -67,13 +73,16 @@ int main() {
         cors(req, res);
         try {
             klotski::State state = getState(req);
-            klotski::Board::Move move = klotski::Solver::GetNextMove(state);
+            std::optional<klotski::Board::Move> move = klotski::Solver::GetNextMove(state);
+            if (move.has_value()) {
+                auto [drow, dcol] = klotski::Board::dir_to_dif.at(move->dir);
+                nlohmann::json result = {
+                        {"id", static_cast<int>(move->id)}, {"drow", drow}, {"dcol", dcol}};
 
-            auto [drow, dcol] = klotski::Board::dir_to_dif.at(move.dir);
-            nlohmann::json result = {
-                    {"id", static_cast<int>(move.id)}, {"drow", drow}, {"dcol", dcol}};
-
-            res.set_content(result.dump(), "application/json");
+                res.set_content(result.dump(), "application/json");
+            }
+            std::cout << "[" << std::chrono::high_resolution_clock::now() << "] " << "/hint "
+                      << req.remote_addr << std::endl;
 
         } catch (std::exception const& e) {
             nlohmann::json err = {{"error", e.what()}};
@@ -81,6 +90,8 @@ int main() {
             res.set_content(err.dump(), "application/json");
         }
     });
+
+    serv.set_mount_point("/", "./www");
 
     serv.listen("0.0.0.0", 8080);
 }

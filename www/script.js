@@ -1,19 +1,16 @@
-/* Улучшённый рендер и перемещение блоков для Klotski. */
-
 const board = document.getElementById('board');
 const movesCounter = document.getElementById('moves');
 let moves = 0;
 let isSolving = false;
 
-// размеры доски
 const ROWS = 5;
 const COLS = 4;
 
-// модель: список блоков (исключая пустые)
-let pieces = []; // каждый элемент: {id,type,row,col,h,w,el}
+// список блоков без пустых {id,type,row,col,h,w,el}
+let pieces = [];
 
 
-// начальная расстановка: каждый объект — блок (top-left position)
+// начальная доска (top-left position)
 
 //    1   0   0    3
 //    1   0   0    3
@@ -47,7 +44,7 @@ function dimsForType(type) {
     }
 }
 
-// Строим occupancy матрицу ROWS x COLS, -1 если пусто, иначе id блока
+// матрица занятости, -1 если пусто, иначе id блока
 function buildOccupancy() {
     const occ = Array.from({ length: ROWS }, () => Array.from({ length: COLS }, () => -1));
     for (const p of pieces) {
@@ -68,13 +65,13 @@ function buildState() {
     const state = {}
     for (let id = 0; id < pieces.length; id++) {
         let p = findPieceById(id);
-        state[id] = {"row": p.row, "col": p.col};
+        state[id] = { "row": p.row, "col": p.col };
     }
 
     return state;
 }
 
-// Отрисовка сетки (фоновые ячейки) и создание элементов блоков
+// Отрисовка сетки и фоновых ячеек, создание элементов блоков
 function renderBoard() {
     board.innerHTML = '';
     moves = 0;
@@ -105,16 +102,14 @@ function renderBoard() {
         el.dataset.id = item.id;
         el.dataset.type = item.type;
 
-        // позиционируем в grid (1-based)
         el.style.gridColumnStart = item.col + 1;
         el.style.gridColumnEnd = `span ${w}`;
         el.style.gridRowStart = item.row + 1;
         el.style.gridRowEnd = `span ${h}`;
 
-        // добавить обработчик клика
         el.addEventListener('click', onPieceClick);
 
-        // добавляем в DOM (после фоновых ячеек — чтобы были сверху)
+        // добавляем в DOM
         board.appendChild(el);
 
         pieces.push({
@@ -132,17 +127,16 @@ function findPieceById(id) {
     return pieces.find(p => p.id === id);
 }
 
-// Проверка, можно ли переместить блок p на (dr,dc)
+// Проверка, можно ли переместить блок p на (dr, dc)
 function canMove(p, dr, dc, occ) {
     const newRow = p.row + dr;
     const newCol = p.col + dc;
 
-    // проверка границ
     if (newRow < 0 || newCol < 0) return false;
     if (newRow + p.h > ROWS) return false;
     if (newCol + p.w > COLS) return false;
 
-    // проверка каждой клетки новой позиции: она должна быть либо пустая (-1) либо принадлежать самому p.id
+    // каждая клетка новой позиции либо пустая (-1) либо p.id
     for (let r = 0; r < p.h; ++r) {
         for (let c = 0; c < p.w; ++c) {
             const rr = newRow + r;
@@ -154,12 +148,11 @@ function canMove(p, dr, dc, occ) {
     return true;
 }
 
-// Выполнить один шаг хода (обновляет модель и DOM)
 function doMove(p, dr, dc) {
     p.row += dr;
     p.col += dc;
 
-    // обновляем DOM позицию
+    // DOM - document object model, для обновления html разметки из js 
     p.el.style.gridColumnStart = p.col + 1;
     p.el.style.gridRowStart = p.row + 1;
 
@@ -167,6 +160,8 @@ function doMove(p, dr, dc) {
     p.el.classList.add('moving');
     moves++;
     updateMoves();
+    if (isSolved()) triggerVictory();
+
     setTimeout(() => p.el.classList.remove('moving'), 250);
 }
 
@@ -212,29 +207,26 @@ function onPieceClick(event) {
     if (canMove(p, dr, dc, occ)) {
         doMove(p, dr, dc);
     }
-    // если никуда не двигается — ничего не делаем
 }
 
-// Обновление счётчика
 function updateMoves() {
     movesCounter.textContent = `Moves: ${moves}`;
 }
 
-// Сброс пазла — возвращаем модель и отрисовку
 function resetPuzzle() {
     isSolving = false;
     renderBoard();
 }
 
 async function solve() {
-    if (isSolving) return;
+    if (isSolving || isSolved()) return;
 
     isSolving = true;
 
     const payload = buildState()
 
     try {
-        const resp = await fetch("http://localhost:8080/solve", {
+        const resp = await fetch("http://185.92.183.95:8080/solve", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
@@ -254,11 +246,8 @@ async function solve() {
             if (!isSolving) break;
             let piece = findPieceById(move["id"]);
             doMove(piece, move["drow"], move["dcol"]);
-            await wait(650);
+            await wait(500);
         }
-
-        // если сервер вернул шаги/действия — можно их применить здесь
-        // например: applySolution(data.moves);
     } catch (e) {
         console.error("Network error:", e);
     }
@@ -267,7 +256,7 @@ async function solve() {
 }
 
 async function hint() {
-    if (isSolving) return;
+    if (isSolving || isSolved()) return;
 
     isSolving = true;
 
@@ -275,14 +264,14 @@ async function hint() {
 
     try {
         let time = Date.now()
-        const resp = await fetch("http://localhost:8080/hint", {
+        const resp = await fetch("http://185.92.183.95:8080/hint", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
 
         console.log("Time to response", Date.now() - time);
-        
+
         if (!resp.ok) {
             console.error("Server error", resp.status);
             const errText = await resp.text();
@@ -294,11 +283,9 @@ async function hint() {
         console.log("Server response:", data);
 
         let piece = findPieceById(data["id"]);
+        if (!isSolving) return;
         doMove(piece, data["drow"], data["dcol"]);
-        await wait(500);
-
-        // если сервер вернул шаги/действия — можно их применить здесь
-        // например: applySolution(data.moves);
+        await wait(300);
     } catch (e) {
         console.error("Network error:", e);
     }
@@ -310,5 +297,24 @@ function wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Инициализация при загрузке
+function isSolved() {
+    let p = findPieceById(0);
+    if (p.row === 3 && p.col === 1) {
+        return true;
+    }
+    return false;
+}
+
+function triggerVictory() {
+    const largePiece = document.querySelector('.piece.large');
+    largePiece.classList.add('victory');
+
+    document.body.classList.add('victory-screen');
+
+    setTimeout(() => {
+        alert('🎉 Поздравляем! Вы решили головоломку!');
+    }, 800);
+}
+
 window.onload = renderBoard;
+
